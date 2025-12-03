@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mix & Match - P&L Oyunu</title>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * {
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .dragging {
+            opacity: 0.5;
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // localStorage wrapper for persistence
+        window.storage = {
+            async get(key, shared) {
+                const storageKey = shared ? `shared_${key}` : key;
+                const item = localStorage.getItem(storageKey);
+                return item ? { key, value: item, shared } : null;
+            },
+            async set(key, value, shared) {
+                const storageKey = shared ? `shared_${key}` : key;
+                localStorage.setItem(storageKey, value);
+                return { key, value, shared };
+            },
+            async list(prefix, shared) {
+                const keys = [];
+                const storagePrefix = shared ? `shared_${prefix || ''}` : (prefix || '');
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith(storagePrefix)) {
+                        keys.push(key);
+                    }
+                }
+                return { keys, prefix, shared };
+            },
+            async delete(key, shared) {
+                const storageKey = shared ? `shared_${key}` : key;
+                localStorage.removeItem(storageKey);
+                return { key, deleted: true, shared };
+            }
+        };
+
+        const MixMatchGame = () => {
+            const [gameStarted, setGameStarted] = useState(false);
+            const [nickname, setNickname] = useState('');
+            const [draggedItem, setDraggedItem] = useState(null);
+            const [placements, setPlacements] = useState({});
+            const [submitted, setSubmitted] = useState(false);
+            const [score, setScore] = useState(0);
+            const [leaderboard, setLeaderboard] = useState([]);
+            const [showLeaderboard, setShowLeaderboard] = useState(false);
+            const [showAdmin, setShowAdmin] = useState(false);
+            const [adminPassword, setAdminPassword] = useState('');
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [loading, setLoading] = useState(false);
+
+            const GOOGLE_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbxgWyq6Pi7uWvDZZ8D7NFsLd1f5dTcFvDby6DPr-qT2N6BK8eRELeGvRCppimleChwJ/exec';
+
+            const correctAnswers = {
+                1: 'Sales Quantity',
+                2: 'Turnover Gross',
+                3: 'Sales Deductions',
+                4: 'Turnover Net',
+                5: 'Var. Factory Costs',
+                6: 'Var. Costs Sales',
+                7: 'Var. Cost Logistic',
+                8: 'Contribution Margin I',
+                9: 'Fixed Factory Costs',
+                10: 'SG&A local regional',
+                11: 'Development',
+                12: 'SG&A Global',
+                13: 'Due Date Effects',
+                14: 'EBIT'
+            };
+
+            const items = [
+                'SG&A Global',
+                'Sales Deductions',
+                'Var. Cost Logistic',
+                'Sales Quantity',
+                'EBIT',
+                'Turnover Net',
+                'Development',
+                'Contribution Margin I',
+                'Fixed Factory Costs',
+                'Due Date Effects',
+                'Var. Factory Costs',
+                'SG&A local regional',
+                'Turnover Gross',
+                'Var. Costs Sales'
+            ];
+
+            useEffect(() => {
+                loadLeaderboard();
+            }, []);
+
+            const loadLeaderboard = async () => {
+                try {
+                    const result = await window.storage.list('score:', true);
+                    if (result && result.keys) {
+                        const scores = await Promise.all(
+                            result.keys.map(async (key) => {
+                                try {
+                                    const data = await window.storage.get(key.replace('shared_', ''), true);
+                                    return data ? JSON.parse(data.value) : null;
+                                } catch {
+                                    return null;
+                                }
+                            })
+                        );
+                        const validScores = scores.filter(s => s !== null);
+                        validScores.sort((a, b) => b.score - a.score);
+                        setLeaderboard(validScores.slice(0, 10));
+                    }
+                } catch (error) {
+                    console.error('Liderlik tablosu yüklenemedi:', error);
+                }
+            };
+
+            const startGame = () => {
+                if (nickname.trim()) {
+                    setGameStarted(true);
+                }
+            };
+
+            const handleDragStart = (item) => {
+                setDraggedItem(item);
+            };
+
+            const handleDrop = (rowNumber) => {
+                if (draggedItem && !submitted) {
+                    setPlacements({ ...placements, [rowNumber]: draggedItem });
+                    setDraggedItem(null);
+                }
+            };
+
+            const handleDragOver = (e) => {
+                e.preventDefault();
+            };
+
+            const handleTouchStart = (e, item) => {
+                if (submitted) return;
+                e.preventDefault();
+                setDraggedItem(item);
+            };
+
+            const handleTouchEnd = (e, rowNumber) => {
+                if (!draggedItem || submitted) return;
+                e.preventDefault();
+                setPlacements({ ...placements, [rowNumber]: draggedItem });
+                setDraggedItem(null);
+            };
+
+            const removeItem = (rowNumber) => {
+                if (!submitted) {
+                    const newPlacements = { ...placements };
+                    delete newPlacements[rowNumber];
+                    setPlacements(newPlacements);
+                }
+            };
+
+            const calculateScore = () => {
+                let correct = 0;
+                const flexibleGroups = [
+                    [2, 3],
+                    [5, 6, 7],
+                    [9, 10, 11, 12, 13]
+                ];
+                const checkedPositions = new Set();
+
+                flexibleGroups.forEach(group => {
+                    const groupAnswers = group.map(pos => correctAnswers[pos]);
+                    const groupPlacements = group.map(pos => placements[pos]);
+                    groupAnswers.forEach(answer => {
+                        if (groupPlacements.includes(answer)) {
+                            correct++;
+                        }
+                    });
+                    group.forEach(pos => checkedPositions.add(pos));
+                });
+
+                Object.keys(correctAnswers).forEach(row => {
+                    const rowNum = parseInt(row);
+                    if (!checkedPositions.has(rowNum)) {
+                        if (placements[row] === correctAnswers[row]) {
+                            correct++;
+                        }
+                    }
+                });
+
+                return Math.round((correct / 14) * 100);
+            };
+
+            const handleSubmit = async () => {
+                setLoading(true);
+                const finalScore = calculateScore();
+                const correctCount = Math.round((finalScore / 100) * 14);
+                setScore(finalScore);
+                setSubmitted(true);
+
+                try {
+                    const response = await fetch(GOOGLE_SHEETS_URL, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            nickname: nickname,
+                            score: finalScore,
+                            correctAnswers: correctCount,
+                            timestamp: new Date().toISOString()
+                        })
+                    });
+                    console.log('✅ Google Sheets\'e kaydedildi!');
+                } catch (error) {
+                    console.error('⚠️ Google Sheets hatası:', error);
+                }
+
+                try {
+                    const scoreData = {
+                        nickname: nickname,
+                        score: finalScore,
+                        correctAnswers: correctCount,
+                        timestamp: new Date().toISOString()
+                    };
+                    const key = `score:${Date.now()}_${nickname.replace(/\s/g, '_')}`;
+                    await window.storage.set(key, JSON.stringify(scoreData), true);
+                    console.log('✅ Liderlik tablosuna kaydedildi!');
+                    await loadLeaderboard();
+                } catch (error) {
+                    console.error('⚠️ Storage hatası:', error);
+                }
+
+                setLoading(false);
+            };
+
+            const resetGame = () => {
+                setPlacements({});
+                setSubmitted(false);
+                setScore(0);
+                setGameStarted(false);
+                setNickname('');
+            };
+
+            const handleAdminLogin = () => {
+                if (adminPassword === 'melis123') {
+                    setIsAdmin(true);
+                    setShowAdmin(false);
+                    setAdminPassword('');
+                } else {
+                    alert('❌ Yanlış şifre!');
+                }
+            };
+
+            const clearAllScores = async () => {
+                if (!window.confirm('TÜM SKORLARI SİLMEK İSTEDİĞİNE EMİN MİSİN?')) return;
+                try {
+                    const result = await window.storage.list('score:', true);
+                    if (result && result.keys) {
+                        for (const key of result.keys) {
+                            await window.storage.delete(key.replace('shared_', ''), true);
+                        }
+                    }
+                    setLeaderboard([]);
+                    alert('✅ Tüm skorlar temizlendi!');
+                } catch (error) {
+                    alert('❌ Skorlar temizlenirken hata oluştu!');
+                    console.error(error);
+                }
+            };
+
+            const placedItems = Object.values(placements);
+            const availableItems = items.filter(item => !placedItems.includes(item));
+
+            if (!gameStarted) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4 sm:p-8 flex items-center justify-center">
+                        <div className="bg-white rounded-2xl shadow-2xl p-6 sm:p-12 max-w-md w-full">
+                            <div className="text-center mb-8">
+                                <h1 className="text-3xl sm:text-4xl font-bold text-slate-800 mb-3">Mix & Match!</h1>
+                                <p className="text-slate-600">P&L Kalemlerini Doğru Yere Yerleştir</p>
+                            </div>
+
+                            <div className="mb-6">
+                                <label className="block text-sm font-medium text-slate-700 mb-2">Nickname</label>
+                                <input
+                                    type="text"
+                                    value={nickname}
+                                    onChange={(e) => setNickname(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && startGame()}
+                                    placeholder="İsmini gir..."
+                                    className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:outline-none focus:border-orange-500 text-lg"
+                                />
+                            </div>
+
+                            <button
+                                onClick={startGame}
+                                disabled={!nickname.trim()}
+                                className="w-full bg-orange-500 text-white py-4 rounded-lg font-semibold text-lg hover:bg-orange-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                            >
+                                Oyuna Başla
+                            </button>
+
+                            <button
+                                onClick={() => { loadLeaderboard(); setShowLeaderboard(true); }}
+                                className="w-full mt-4 bg-slate-700 text-white py-3 rounded-lg font-semibold flex items-center justify-center gap-2 hover:bg-slate-600 transition-colors"
+                            >
+                                🏆 Liderlik Tablosu
+                            </button>
+
+                            <button
+                                onClick={() => setShowAdmin(true)}
+                                className="w-full mt-2 bg-red-600 text-white py-2 rounded-lg font-semibold text-sm hover:bg-red-700 transition-colors"
+                            >
+                                🔐 Admin Paneli
+                            </button>
+
+                            {showLeaderboard && leaderboard.length > 0 && (
+                                <div className="mt-6 bg-slate-50 rounded-lg p-4">
+                                    <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">🏆 Top 10</h3>
+                                    <div className="space-y-2">
+                                        {leaderboard.map((entry, idx) => (
+                                            <div key={idx} className="flex justify-between items-center text-sm">
+                                                <span className="text-slate-700">{idx + 1}. {entry.nickname}</span>
+                                                <span className="font-bold text-orange-600">{entry.score}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {showAdmin && (
+                                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                                    <div className="bg-white rounded-xl p-6 max-w-md w-full">
+                                        <h3 className="text-xl font-bold text-slate-800 mb-4">🔐 Admin Girişi</h3>
+                                        {!isAdmin ? (
+                                            <>
+                                                <input
+                                                    type="password"
+                                                    value={adminPassword}
+                                                    onChange={(e) => setAdminPassword(e.target.value)}
+                                                    onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                                                    placeholder="Admin şifresi..."
+                                                    className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg mb-4"
+                                                />
+                                                <div className="flex gap-2">
+                                                    <button onClick={handleAdminLogin} className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700">Giriş</button>
+                                                    <button onClick={() => { setShowAdmin(false); setAdminPassword(''); }} className="flex-1 bg-slate-500 text-white py-2 rounded-lg hover:bg-slate-600">İptal</button>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <p className="text-slate-600 mb-4">Admin olarak giriş yaptınız!</p>
+                                                <button onClick={clearAllScores} className="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 font-semibold mb-2">🗑️ Tüm Skorları Temizle</button>
+                                                <button onClick={() => { setShowAdmin(false); setIsAdmin(false); }} className="w-full bg-slate-500 text-white py-2 rounded-lg hover:bg-slate-600">Kapat</button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4 sm:p-8">
+                    <div className="max-w-7xl mx-auto">
+                        <div className="bg-white rounded-2xl shadow-2xl p-4 sm:p-8">
+                            <div className="flex justify-between items-center mb-6">
+                                <div>
+                                    <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">Mix & Match!</h1>
+                                    <p className="text-sm sm:text-base text-slate-600">Oyuncu: <span className="font-semibold text-orange-600">{nickname}</span></p>
+                                </div>
+                                <button onClick={resetGame} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors text-sm sm:text-base">🔄 Yeni Oyun</button>
+                            </div>
+
+                            {submitted && (
+                                <div className="mb-6 p-4 sm:p-6 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl text-white text-center">
+                                    <h2 className="text-2xl sm:text-3xl font-bold mb-2">Skorun: {score}%</h2>
+                                    <p className="text-base sm:text-lg">14 sorudan {Math.round((score / 100) * 14)} doğru!</p>
+                                </div>
+                            )}
+
+                            {draggedItem && (
+                                <div className="mb-4 p-3 bg-orange-200 border-2 border-orange-500 rounded-lg text-center font-semibold text-orange-800">
+                                    Seçili: {draggedItem} - Bir satıra dokun veya sürükle
+                                </div>
+                            )}
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                <div>
+                                    <h2 className="text-lg sm:text-xl font-bold text-slate-800 mb-4">P&L Satırları</h2>
+                                    <div className="bg-slate-50 rounded-lg p-2 sm:p-4 space-y-2">
+                                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(row => (
+                                            <div
+                                                key={row}
+                                                onDrop={() => handleDrop(row)}
+                                                onDragOver={handleDragOver}
+                                                onTouchEnd={(e) => handleTouchEnd(e, row)}
+                                                className={`p-3 sm:p-4 rounded-lg border-2 border-dashed min-h-14 sm:min-h-16 flex items-center justify-between transition-all
+                                                    ${placements[row] ? 'bg-orange-100 border-orange-400' : 'bg-white border-slate-300'}
+                                                    ${submitted && placements[row] === correctAnswers[row] ? 'bg-green-100 border-green-500' : ''}
+                                                    ${submitted && placements[row] && placements[row] !== correctAnswers[row] ? 'bg-red-100 border-red-500' : ''}
+                                                    ${row === 8 ? 'border-orange-500 border-4' : ''}
+                                                    ${row === 14 ? 'bg-slate-800 text-white border-slate-800' : ''}
+                                                    ${draggedItem && !placements[row] ? 'border-orange-500 bg-orange-50' : ''}
+                                                `}
+                                            >
+                                                <div className="flex items-center gap-2 sm:gap-3 flex-1">
+                                                    <span className="font-bold text-base sm:text-lg">{row}</span>
+                                                    {placements[row] ? (
+                                                        <span className="font-medium text-sm sm:text-base">{placements[row]}</span>
+                                                    ) : (
+                                                        <span className="text-slate-400 text-xs sm:text-sm">Buraya sürükle/dokun...</span>
+                                                    )}
+                                                </div>
+                                                {placements[row] && !submitted && (
+                                                    <button onClick={() => removeItem(row)} className="text-red-500 hover:text-red-700 font-bold text-lg sm:text-xl px-2">✕</button>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h2 className="text-lg sm:text-xl font-bold text-slate-800 mb-4">P&L Kalemleri</h2>
+                                    <div className="bg-slate-50 rounded-lg p-2 sm:p-4 space-y-3">
+                                        {availableItems.map(item => (
+                                            <div
+                                                key={item}
+                                                draggable={!submitted}
+                                                onDragStart={() => handleDragStart(item)}
+                                                onTouchStart={(e) => handleTouchStart(e, item)}
+                                                className={`bg-orange-500 text-white p-3 sm:p-4 rounded-lg font-medium text-center shadow-md text-sm sm:text-base
+                                                    ${submitted ? 'opacity-50 cursor-not-allowed' : 'cursor-move hover:bg-orange-600 hover:shadow-lg active:scale-95 transition-all'}
+                                                    ${draggedItem === item ? 'opacity-50 scale-95 ring-4 ring-orange-300' : ''}
+                                                `}
+                                            >
+                                                {item}
+                                            </div>
+                                        ))}
+                                        {availableItems.length === 0 && !submitted && (
+                                            <p className="text-center text-slate-500 py-8 text-sm sm:text-base">Tüm kalemler yerleştirildi! 🎉</p>
+                                        )}
+                                    </div>
+
+                                    {!submitted && Object.keys(placements).length === 14 && (
+                                        <button onClick={handleSubmit} disabled={loading} className="w-full mt-6 bg-green-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-green-700 shadow-lg transition-all disabled:bg-gray-400">
+                                            {loading ? 'Gönderiliyor...' : 'Cevapları Gönder'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {submitted && leaderboard.length > 0 && (
+                                <div className="mt-8 bg-slate-50 rounded-xl p-4 sm:p-6">
+                                    <h3 className="text-lg sm:text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">🏆 Liderlik Tablosu</h3>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        {leaderboard.map((entry, idx) => (
+                                            <div key={idx} className={`p-3 sm:p-4 rounded-lg flex justify-between items-center ${entry.nickname === nickname ? 'bg-orange-100 border-2 border-orange-500' : 'bg-white'}`}>
+                                                <span className="font-semibold text-slate-700 text-sm sm:text-base">{idx + 1}. {entry.nickname}</span>
+                                                <span className="font-bold text-orange-600 text-base sm:text-lg">{entry.score}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<MixMatchGame />, document.getElementById('root'));
+    </script>
+</body>
+</html>
